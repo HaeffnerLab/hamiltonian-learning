@@ -6,9 +6,9 @@ using Random
 using Optim
 using Distributions
 
-function ms_calibration(detuning, pi_time, initial_guess, N, tspan_ideal, tspan_experiment, timescale=1e-6)
+function ms_calibration(detuning_khz, pi_time_μs, initial_guess, N, tspan_ideal, tspan_experiment, ac_stark_shift=35)
 
-    function simulate_trap(tspan, detuning, pi_time)
+    function simulate_trap(tspan, detuning_khz, pi_time_μs)
         # defining trap parameters
         ca_ions = [Ca40(["S-1/2", "D-1/2"]), Ca40(["S-1/2", "D-1/2"])]
         chain = LinearChain(
@@ -23,13 +23,13 @@ function ms_calibration(detuning, pi_time, initial_guess, N, tspan_ideal, tspan_
         trap = Trap(configuration=chain, B=4e-4, Bhat=ẑ, δB=0, lasers=lasers)
 
         mode = trap.configuration.vibrational_modes.z[1]
-        mode.N = 5
+        mode.N = 10
 
-        Efield_from_pi_time!(pi_time, trap, 1, 1, ("S-1/2", "D-1/2"));
-        Efield_from_pi_time!(pi_time, trap, 2, 1, ("S-1/2", "D-1/2"));
+        Efield_from_pi_time!(pi_time_μs * 1e-6, trap, 1, 1, ("S-1/2", "D-1/2"));
+        Efield_from_pi_time!(pi_time_μs * 1e-6, trap, 2, 1, ("S-1/2", "D-1/2"));
         
-        Δ = detuning
-        d = 100  # AC Stark shift compensation
+        Δ = detuning_khz * 1e3
+        d = ac_stark_shift  # AC Stark shift compensation
         f = transition_frequency(trap, 1, ("S-1/2", "D-1/2"))
         
         detuned_lasers = [copy(lasers[1]), copy(lasers[2])]
@@ -38,8 +38,8 @@ function ms_calibration(detuning, pi_time, initial_guess, N, tspan_ideal, tspan_
         
         trap.lasers = detuned_lasers    
 
-        h = hamiltonian(trap, timescale=1e-6)
-        @time tout, sol = timeevolution.schroedinger_dynamic(
+        h = hamiltonian(trap, timescale=1e-6, rwa_cutoff=1e5)
+        tout, sol = timeevolution.schroedinger_dynamic(
             tspan, ca_ions[1]["S-1/2"] ⊗ ca_ions[2]["S-1/2"] ⊗ mode[0],
             h)
         
@@ -51,7 +51,7 @@ function ms_calibration(detuning, pi_time, initial_guess, N, tspan_ideal, tspan_
         return tout, SS, DD, SD, DS
     end;
 
-    tout, ideal_SS, ideal_DD, ideal_SD, ideal_DS = simulate_trap(tspan_ideal, detuning, pi_time);
+    tout, ideal_SS, ideal_DD, ideal_SD, ideal_DS = simulate_trap(tspan_ideal, detuning_khz, pi_time_μs);
 
     # function to simulate taking real data
     function simulate_experiment(n_shots, SS, DD, SD, DS)
@@ -77,8 +77,8 @@ function ms_calibration(detuning, pi_time, initial_guess, N, tspan_ideal, tspan_
 
     function log_likelihood(samples, num_experiments, times, θ₁, θ₂)
         """
-        θ₁ = detuning
-        θ₂ = pi_time
+        θ₁ = detuning_khz
+        θ₂ = pi_time_μs
         """
         out = 0
         
@@ -96,7 +96,7 @@ function ms_calibration(detuning, pi_time, initial_guess, N, tspan_ideal, tspan_
     end
 
     # run the experiment, learn the model, and reconstruct the curve from the learned model
-    tout, exp_SS, exp_DD, exp_SD, exp_DS = simulate_trap(tspan_experiment, detuning, pi_time)
+    tout, exp_SS, exp_DD, exp_SD, exp_DS = simulate_trap(tspan_experiment, detuning_khz, pi_time_μs)
     samples = simulate_experiment(N, exp_SS, exp_DD, exp_SD, exp_DS)
     
     function objective(θ::Vector)
@@ -116,7 +116,7 @@ function ms_calibration(detuning, pi_time, initial_guess, N, tspan_ideal, tspan_
                 "DS" => ideal_DS[i],
                 )
             for i in eachindex(ideal_SS)],
-        "ideal_fit_params" => [detuning, pi_time],
+        "ideal_fit_params" => [detuning_khz, pi_time_μs],
         "experimental_data" => [
             Dict(
                 "SS" => sample["SS"] / N,
@@ -137,10 +137,10 @@ function ms_calibration(detuning, pi_time, initial_guess, N, tspan_ideal, tspan_
     )
 end
 
-function ms_fidelity(actual_detuning, actual_pi_time, learned_detuning, learned_pi_time, timescale=1e-6)
+function ms_fidelity(actual_detuning_khz, actual_pi_time_μs, learned_detuning_khz, learned_pi_time_μs, ac_stark_shift=35)
     """
     This function assumes we experimentally don't touch the detuning and
-    adjust only the laser power to attempt to reach pi_time = η / Δ,
+    adjust only the laser power to attempt to reach pi_time_μs = η / Δ,
     and then run the MS gate using a gate time of 1 / Δ.
     """
     ca_ions = [Ca40(["S-1/2", "D-1/2"]), Ca40(["S-1/2", "D-1/2"])]
@@ -156,22 +156,22 @@ function ms_fidelity(actual_detuning, actual_pi_time, learned_detuning, learned_
     trap = Trap(configuration=chain, B=4e-4, Bhat=ẑ, δB=0, lasers=lasers)
 
     mode = trap.configuration.vibrational_modes.z[1]
-    mode.N = 5
+    mode.N = 10
     η = abs(get_η(mode, lasers[1], ca_ions[1]))
     
     # calculate the desired experimental pi time using the learned detuning
-    desired_pi_time = η / learned_detuning
+    desired_pi_time_μs = 1e6 * η / (learned_detuning_khz * 1e3)
     
     # the resulting physical pi time will then be this desired pi time
     # adjusted by the ratio of actual/learned pi time
-    physical_pi_time = desired_pi_time * (actual_pi_time/learned_pi_time)
-    Efield_from_pi_time!(physical_pi_time, trap, 1, 1, ("S-1/2", "D-1/2"));
-    Efield_from_pi_time!(physical_pi_time, trap, 2, 1, ("S-1/2", "D-1/2"));
+    physical_pi_time_μs = desired_pi_time_μs * (actual_pi_time_μs/learned_pi_time_μs)
+    Efield_from_pi_time!(1e-6 * physical_pi_time_μs, trap, 1, 1, ("S-1/2", "D-1/2"));
+    Efield_from_pi_time!(1e-6 * physical_pi_time_μs, trap, 2, 1, ("S-1/2", "D-1/2"));
 
     # the physical laser frequency will be the actual detuning
-    Δ = actual_detuning
+    Δ = actual_detuning_khz * 1e3
 
-    d = 100  # AC Stark shift compensation
+    d = ac_stark_shift  # AC Stark shift compensation
     f = transition_frequency(trap, 1, ("S-1/2", "D-1/2"))
     
     detuned_lasers = [copy(lasers[1]), copy(lasers[2])]
@@ -181,10 +181,10 @@ function ms_fidelity(actual_detuning, actual_pi_time, learned_detuning, learned_
     trap.lasers = detuned_lasers
     
     # evolve for the learned gate time
-    learned_gate_time = (1. / learned_detuning) / timescale
-    tspan = [0, learned_gate_time]
-    h = hamiltonian(trap, timescale=1e-6)
-    @time tout, sol = timeevolution.schroedinger_dynamic(
+    learned_gate_time_μs = 1e6 / (learned_detuning_khz * 1e3)
+    tspan = LinRange(0, learned_gate_time_μs, 50)
+    h = hamiltonian(trap, timescale=1e-6, rwa_cutoff=1e5)
+    tout, sol = timeevolution.schroedinger_dynamic(
         tspan, ca_ions[1]["S-1/2"] ⊗ ca_ions[2]["S-1/2"] ⊗ mode[0],
         h)
 
