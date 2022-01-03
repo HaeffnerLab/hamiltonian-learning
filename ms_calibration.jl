@@ -8,8 +8,14 @@ using Distributions
 
 struct HamiltonianParameters
     detuning_khz::Float64
-    pi_time_μs::Float64
+    pi_time_blue_μs::Float64
+    pi_time_red_μs::Float64
     ac_stark_shift_hz::Float64
+    HamiltonianParameters(params::Vector) = new(params...)
+end
+
+function as_vector(θ::HamiltonianParameters)
+    return [getproperty(θ, Symbol(name)) for name in fieldnames(HamiltonianParameters)]
 end
 
 function simulate_trap(tspan, θ::HamiltonianParameters)
@@ -28,9 +34,6 @@ function simulate_trap(tspan, θ::HamiltonianParameters)
 
     mode = trap.configuration.vibrational_modes.z[1]
     mode.N = 10
-
-    Efield_from_pi_time!(θ.pi_time_μs * 1e-6, trap, 1, 1, ("S-1/2", "D-1/2"));
-    Efield_from_pi_time!(θ.pi_time_μs * 1e-6, trap, 2, 1, ("S-1/2", "D-1/2"));
     
     Δ = θ.detuning_khz * 1e3
     d = θ.ac_stark_shift_hz  # AC Stark shift compensation
@@ -40,7 +43,10 @@ function simulate_trap(tspan, θ::HamiltonianParameters)
     detuned_lasers[1].Δ = f + mode.ν + Δ - d
     detuned_lasers[2].Δ = f - mode.ν - Δ + d
     
-    trap.lasers = detuned_lasers    
+    trap.lasers = detuned_lasers
+    
+    Efield_from_pi_time!(θ.pi_time_blue_μs * 1e-6, trap, 1, 1, ("S-1/2", "D-1/2"));
+    Efield_from_pi_time!(θ.pi_time_red_μs * 1e-6, trap, 2, 1, ("S-1/2", "D-1/2"));
 
     h = hamiltonian(trap, timescale=1e-6, rwa_cutoff=1e5)
     tout, sol = timeevolution.schroedinger_dynamic(
@@ -105,14 +111,12 @@ function ms_calibration(
     samples = simulate_experiment(N, exp_SS, exp_DD, exp_SD, exp_DS)
 
     function objective(θ::Vector)
-        θ = HamiltonianParameters(θ[1], θ[2], θ[3])
-        return -log_likelihood(samples, N, tout, θ)
+        return -log_likelihood(samples, N, tout, HamiltonianParameters(θ))
     end
     
-    θ_initial_guess = [θ_initial_guess.detuning_khz, θ_initial_guess.pi_time_μs, θ_initial_guess.ac_stark_shift_hz]
-    res = optimize(objective, θ_initial_guess)
+    res = optimize(objective, as_vector(θ_initial_guess))
     θ_learned = Optim.minimizer(res)
-    θ_learned = HamiltonianParameters(θ_learned[1], θ_learned[2], θ_learned[3])
+    θ_learned = HamiltonianParameters(θ_learned)
 
     tout, pred_SS, pred_DD, pred_SD, pred_DS = simulate_trap(tspan_ideal, θ_learned)
     
@@ -168,15 +172,6 @@ function ms_fidelity(θ_actual, θ_learned)
     mode = trap.configuration.vibrational_modes.z[1]
     mode.N = 10
     η = abs(get_η(mode, lasers[1], ca_ions[1]))
-    
-    # calculate the desired experimental pi time using the learned detuning
-    desired_pi_time_μs = 1e6 * η / (θ_learned.detuning_khz * 1e3)
-    
-    # the resulting physical pi time will then be this desired pi time
-    # adjusted by the ratio of actual/learned pi time
-    physical_pi_time_μs = desired_pi_time_μs * (θ_actual.pi_time_μs/θ_learned.pi_time_μs)
-    Efield_from_pi_time!(1e-6 * physical_pi_time_μs, trap, 1, 1, ("S-1/2", "D-1/2"));
-    Efield_from_pi_time!(1e-6 * physical_pi_time_μs, trap, 2, 1, ("S-1/2", "D-1/2"));
 
     # the physical laser frequency will be the actual detuning
     Δ = θ_actual.detuning_khz * 1e3
@@ -189,6 +184,17 @@ function ms_fidelity(θ_actual, θ_learned)
     detuned_lasers[2].Δ = f - mode.ν - Δ + d
     
     trap.lasers = detuned_lasers
+    
+    # calculate the desired experimental pi time using the learned detuning
+    desired_pi_time_μs = 1e6 * η / (θ_learned.detuning_khz * 1e3)
+    
+    # the resulting physical pi time will then be this desired pi time
+    # adjusted by the ratio of actual/learned pi time
+    physical_pi_time_blue_μs = desired_pi_time_μs * (θ_actual.pi_time_blue_μs/θ_learned.pi_time_blue_μs)
+    Efield_from_pi_time!(1e-6 * physical_pi_time_blue_μs, trap, 1, 1, ("S-1/2", "D-1/2"));
+    
+    physical_pi_time_red_μs = desired_pi_time_μs * (θ_actual.pi_time_red_μs/θ_learned.pi_time_red_μs)
+    Efield_from_pi_time!(1e-6 * physical_pi_time_red_μs, trap, 2, 1, ("S-1/2", "D-1/2"));
     
     # evolve for the learned gate time
     learned_gate_time_μs = 1e6 / (θ_learned.detuning_khz * 1e3)
