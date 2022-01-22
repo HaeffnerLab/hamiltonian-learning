@@ -48,7 +48,7 @@ function configure_trap(ions, δB=0)
     return trap, η
 end
 
-function simulate_trap(tspan, θ::HamiltonianParameters)
+function get_experimental_probabilities(tspan, θ::HamiltonianParameters)
     ca_ions = [Ca40(), Ca40()]
     trap, _ = configure_trap(ca_ions)
 
@@ -85,7 +85,7 @@ end
 
 function log_likelihood(samples, num_experiments, times, θ::HamiltonianParameters)
     out = 0    
-    p_SS, p_DD, p_SD, p_DS, _ = simulate_trap(times, θ)
+    p_SS, p_DD, p_SD, p_DS, _ = get_experimental_probabilities(times, θ)
     for i in eachindex(times)
         probabilities = [p_SS[i], p_DD[i], p_SD[i], p_DS[i]] ./ (p_SS[i] + p_DD[i] + p_SD[i] + p_DS[i])
         dist = Multinomial(num_experiments, probabilities)
@@ -97,8 +97,7 @@ function log_likelihood(samples, num_experiments, times, θ::HamiltonianParamete
     return out
 end
 
-# function to simulate taking real data
-function simulate_experiment(n_shots, SS, DD, SD, DS)
+function get_samples_from_probabilities(n_shots, SS, DD, SD, DS)
     samples = []
     for i in eachindex(SS)
         sample = Dict("SS" => 0, "DD" => 0, "SD" => 0, "DS" => 0)
@@ -126,11 +125,11 @@ function ms_calibration(
     tspan_ideal,
     tspan_experiment
 )
-    ideal_SS, ideal_DD, ideal_SD, ideal_DS, _ = simulate_trap(tspan_ideal, θ_actual);
+    ideal_SS, ideal_DD, ideal_SD, ideal_DS, _ = get_experimental_probabilities(tspan_ideal, θ_actual);
 
     # run the experiment, learn the model, and reconstruct the curve from the learned model
-    exp_SS, exp_DD, exp_SD, exp_DS, _, tout = simulate_trap(tspan_experiment, θ_actual)
-    samples = simulate_experiment(N, exp_SS, exp_DD, exp_SD, exp_DS)
+    exp_SS, exp_DD, exp_SD, exp_DS, _, tout = get_experimental_probabilities(tspan_experiment, θ_actual)
+    samples = get_samples_from_probabilities(N, exp_SS, exp_DD, exp_SD, exp_DS)
 
     function objective(θ::Vector)
         return -log_likelihood(samples, N, tout, HamiltonianParameters(θ))
@@ -140,7 +139,7 @@ function ms_calibration(
     θ_learned = Optim.minimizer(res)
     θ_learned = HamiltonianParameters(θ_learned)
 
-    pred_SS, pred_DD, pred_SD, pred_DS, _ = simulate_trap(tspan_ideal, θ_learned)
+    pred_SS, pred_DD, pred_SD, pred_DS, _ = get_experimental_probabilities(tspan_ideal, θ_learned)
     
     return Dict(
         "ideal_curve" => [
@@ -205,7 +204,7 @@ function ms_fidelity(θ_actual, θ_learned)
     # evolve for the learned gate time
     learned_gate_time_μs = 1e6 / (θ_learned.detuning_khz * 1e3)
     tspan = LinRange(0, learned_gate_time_μs, 50)
-    _, _, _, _, p_bell, _ = simulate_trap(tspan, θ_calibrated)
+    _, _, _, _, p_bell, _ = get_experimental_probabilities(tspan, θ_calibrated)
 
     # MS fidelity is overlap with desired Bell state at final time
     return p_bell[end]
