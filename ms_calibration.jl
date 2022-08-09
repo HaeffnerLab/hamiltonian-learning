@@ -9,7 +9,6 @@ using Distributions
 # hard-coded physical parameters of the experiment
 magnetic_field_gauss = 4.0
 real_sym_ac_stark_shift_khz = 1.0
-real_antisym_ac_stark_shift_khz = -0.035
 ν_ax_mhz = 1.0
 ν_rad_mhz = 3.0
 
@@ -18,7 +17,6 @@ struct HamiltonianParameters
     pi_time_blue_μs::Float64
     pi_time_red_μs::Float64
     sym_ac_stark_shift_khz::Float64
-    antisym_ac_stark_shift_khz::Float64
     HamiltonianParameters(params::Vector) = new(params...)
 end
 
@@ -54,8 +52,8 @@ function get_experimental_probabilities(tspan, θ::HamiltonianParameters)
 
     f = transition_frequency(trap, 1, ("S-1/2", "D-1/2"))
     Δ = θ.detuning_khz * 1e3    
-    δ_blue = (θ.sym_ac_stark_shift_khz + θ.antisym_ac_stark_shift_khz) * 1e3
-    δ_red = (θ.sym_ac_stark_shift_khz - θ.antisym_ac_stark_shift_khz) * 1e3
+    δ_blue = θ.sym_ac_stark_shift_khz * 1e3
+    δ_red = θ.sym_ac_stark_shift_khz * 1e3
     
     mode = trap.configuration.vibrational_modes.z[1]
     detuned_lasers = [copy(trap.lasers[1]), copy(trap.lasers[2])]
@@ -189,16 +187,14 @@ function ms_fidelity(θ_actual, θ_learned)
     physical_pi_time_blue_μs = desired_pi_time_μs * (θ_actual.pi_time_blue_μs/θ_learned.pi_time_blue_μs)    
     physical_pi_time_red_μs = desired_pi_time_μs * (θ_actual.pi_time_red_μs/θ_learned.pi_time_red_μs)
 
-    # use the learned AC Stark shift values
+    # use the learned AC Stark shift value
     sym_ac_stark_shift_khz = θ_learned.sym_ac_stark_shift_khz
-    antisym_ac_stark_shift_khz = θ_learned.antisym_ac_stark_shift_khz
 
     θ_calibrated = HamiltonianParameters([
         physical_detuning_khz,
         physical_pi_time_blue_μs,
         physical_pi_time_red_μs,
         sym_ac_stark_shift_khz,
-        antisym_ac_stark_shift_khz,
     ])
 
     # evolve for the learned gate time
